@@ -22,6 +22,8 @@ interface RetroClockProps {
   secondHandLength?: number;
 
   showCenterCap?: boolean;
+  
+  customTime?: Date | null; // NEW: Allows overriding the time
 }
 
 // Visual configuration
@@ -84,20 +86,29 @@ export const RetroClock: React.FC<RetroClockProps> = ({
   secondHandWidth = 4,
   secondHandLength = 170,
 
-  showCenterCap = false
+  showCenterCap = false,
+  customTime = null
 }) => {
-  const [time, setTime] = useState(new Date());
-  const requestRef = useRef<number>(0);
+  const [internalTime, setInternalTime] = useState(new Date());
 
-  const animate = () => {
-    setTime(new Date());
-    requestRef.current = requestAnimationFrame(animate);
-  };
-
+  // Animation Loop
   useEffect(() => {
-    requestRef.current = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(requestRef.current);
-  }, []);
+    // If customTime is set, we don't need to run the animation loop for time updates.
+    // However, if we switch back to Live, we want it running.
+    if (customTime) return;
+
+    let frameId: number;
+    const animate = () => {
+      setInternalTime(new Date());
+      frameId = requestAnimationFrame(animate);
+    };
+
+    frameId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frameId);
+  }, [customTime]);
+
+  // Determine which time to use (Manual vs Live)
+  const time = customTime || internalTime;
 
   // Geometry Helpers
   const center = size / 2;
@@ -109,6 +120,9 @@ export const RetroClock: React.FC<RetroClockProps> = ({
   
   const rawSeconds = time.getSeconds() + time.getMilliseconds() / 1000;
   const discreteSeconds = time.getSeconds();
+  
+  // If we are in custom time mode, ms might be 0, effectively acting like 'tick'.
+  // We use rawSeconds if smooth is on, but for custom time rawSeconds ~ discreteSeconds usually.
   const secondsForArcs = isSmooth ? rawSeconds : discreteSeconds;
 
   // Determine current uniform color index (0-11) based on 5-second intervals
