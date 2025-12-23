@@ -23,7 +23,7 @@ interface RetroClockProps {
 
   showCenterCap?: boolean;
   
-  customTime?: Date | null; // NEW: Allows overriding the time
+  customTime?: Date | null; // Allows overriding the time
 }
 
 // Visual configuration
@@ -93,10 +93,12 @@ export const RetroClock: React.FC<RetroClockProps> = ({
 
   // Animation Loop
   useEffect(() => {
-    // If customTime is set, we don't need to run the animation loop for time updates.
-    // However, if we switch back to Live, we want it running.
-    if (customTime) return;
+    if (customTime !== null) { // If customTime is provided, we use it directly
+      setInternalTime(customTime); // Update internal time with custom time
+      return; // Stop the internal requestAnimationFrame loop
+    }
 
+    // If customTime is null, then run the live clock animation
     let frameId: number;
     const animate = () => {
       setInternalTime(new Date());
@@ -105,7 +107,7 @@ export const RetroClock: React.FC<RetroClockProps> = ({
 
     frameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frameId);
-  }, [customTime]);
+  }, [customTime]); // Re-run effect when customTime changes
 
   // Determine which time to use (Manual vs Live)
   const time = customTime || internalTime;

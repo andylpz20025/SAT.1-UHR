@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { RetroClock } from './components/RetroClock';
 import { CRTOverlay } from './components/CRTOverlay';
 
@@ -8,9 +8,24 @@ const App: React.FC = () => {
   // UI State
   const [showSettings, setShowSettings] = useState(true);
 
+  // UI State for settings panel resizing
+  const [settingsPanelWidth, setSettingsPanelWidth] = useState(256); // Default width
+  const [isResizing, setIsResizing] = useState(false);
+  const minPanelWidth = 200;
+  const maxPanelWidth = 400;
+
   // Time Mode State
-  const [useCustomTime, setUseCustomTime] = useState(false);
-  const [customTimeInput, setCustomTimeInput] = useState("12:00:00");
+  const [isLiveMode, setIsLiveMode] = useState(true); // true for Live, false for Manual
+  const [manualInputTimeStr, setManualInputTimeStr] = useState("12:00:00");
+  const [isManualTimeRunning, setIsManualTimeRunning] = useState(false); // TRUE if manual time is actively running
+
+  // Refs for manual time animation
+  const animationFrameId = useRef<number | null>(null);
+  const manualTimeReferenceDate = useRef<Date | null>(null); // The Date object base when started/paused
+  const manualTimeStartRealMs = useRef<number | null>(null); // Date.now() timestamp when animation started
+
+  // This is the actual time object passed to RetroClock
+  const [currentClockTime, setCurrentClockTime] = useState<Date | null>(null);
 
   // Configuration State
   const [scale, setScale] = useState(1); // 1 = 100%
@@ -40,17 +55,133 @@ const App: React.FC = () => {
     setMounted(true);
   }, []);
 
-  // Helper to get Date object from manual input
-  const getCustomDate = () => {
-    if (!useCustomTime) return null;
-    const [h, m, s] = customTimeInput.split(':').map(Number);
-    const date = new Date();
-    date.setHours(h || 0);
-    date.setMinutes(m || 0);
-    date.setSeconds(s || 0);
-    date.setMilliseconds(0);
+  // Helper to get Date object from manual input string
+  const parseManualInputToDate = useCallback((inputStr: string): Date => {
+    const [h, m, s] = inputStr.split(':').map(Number);
+    const date = new Date(); // Use current date, but override time
+    date.setHours(h || 0, m || 0, s || 0, 0); // Ensure milliseconds are 0 for consistency
     return date;
+  }, []);
+
+  // Function to start the manual time animation
+  const startManualTimeAnimation = useCallback(() => {
+    if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+
+    // Reference time is either the currently displayed time (if continuing from pause)
+    // or the time from the input field (if starting fresh).
+    manualTimeReferenceDate.current = currentClockTime || parseManualInputToDate(manualInputTimeStr);
+    manualTimeStartRealMs.current = Date.now();
+    setIsManualTimeRunning(true);
+
+    const animate = () => {
+      if (manualTimeReferenceDate.current && manualTimeStartRealMs.current !== null) {
+        const elapsedTime = Date.now() - manualTimeStartRealMs.current;
+        setCurrentClockTime(new Date(manualTimeReferenceDate.current.getTime() + elapsedTime));
+      }
+      animationFrameId.current = requestAnimationFrame(animate);
+    };
+    animationFrameId.current = requestAnimationFrame(animate);
+  }, [currentClockTime, manualInputTimeStr, parseManualInputToDate]);
+
+  // Function to pause the manual time animation
+  const pauseManualTimeAnimation = useCallback(() => {
+    if (animationFrameId.current) {
+      cancelAnimationFrame(animationFrameId.current);
+      animationFrameId.current = null;
+    }
+    setIsManualTimeRunning(false);
+    // The currently running time becomes the new reference for input/restart
+    manualTimeReferenceDate.current = currentClockTime;
+    manualTimeStartRealMs.current = null;
+  }, [currentClockTime]);
+
+  // Main effect to manage the time source for RetroClock
+  useEffect(() => {
+    if (!isLiveMode && isManualTimeRunning) {
+      // Manual time is running
+      startManualTimeAnimation();
+    } else {
+      // Manual time is paused or Live mode is active
+      pauseManualTimeAnimation(); // Stop any running animation frame
+      if (!isLiveMode && !isManualTimeRunning) {
+        // Manual time is paused, update currentClockTime based on input string
+        setCurrentClockTime(parseManualInputToDate(manualInputTimeStr));
+      } else if (isLiveMode) {
+        // Live mode, RetroClock will handle its own internal time
+        setCurrentClockTime(null);
+      }
+    }
+
+    return () => { // Cleanup on unmount or dependency change
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+      }
+    };
+  }, [isLiveMode, isManualTimeRunning, manualInputTimeStr, parseManualInputToDate, startManualTimeAnimation, pauseManualTimeAnimation]);
+
+  // Effect to update the displayed time immediately when input string changes in paused manual mode
+  useEffect(() => {
+    if (!isLiveMode && !isManualTimeRunning) {
+        setCurrentClockTime(parseManualInputToDate(manualInputTimeStr));
+    }
+  }, [manualInputTimeStr, isLiveMode, isManualTimeRunning, parseManualInputToDate]);
+
+
+  // Handler for toggling between Live and Manual time mode
+  const handleTimeModeToggle = () => {
+    setIsLiveMode(prev => {
+      const newMode = !prev;
+      if (newMode) { // Switching to Live mode
+        setIsManualTimeRunning(false); // Stop manual time if running
+      } else { // Switching to Manual mode (always starts paused)
+        setCurrentClockTime(parseManualInputToDate(manualInputTimeStr)); // Set initial time from input
+      }
+      return newMode;
+    });
   };
+
+  // Handler for changes in the manual time input field
+  const handleManualTimeInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setManualInputTimeStr(e.target.value);
+    // The actual clock update for paused mode is handled by the useEffect above.
+  };
+
+  // --- Resizable Panel Logic ---
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault(); // Prevent text selection on drag
+    setIsResizing(true);
+    document.body.style.cursor = 'ew-resize'; // Change cursor
+  }, []);
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (isResizing) {
+      // Calculate new width based on mouse X position relative to panel's left edge
+      // Assuming panel is anchored to the left (left: 6 + padding)
+      const newWidth = e.clientX - 24; // 24 = left offset (6px) + some padding margin
+      setSettingsPanelWidth(Math.max(minPanelWidth, Math.min(maxPanelWidth, newWidth)));
+    }
+  }, [isResizing, minPanelWidth, maxPanelWidth]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsResizing(false);
+    document.body.style.cursor = 'default'; // Reset cursor
+  }, []);
+
+  // Add/remove global mouse listeners for resizing
+  useEffect(() => {
+    if (isResizing) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    } else {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    }
+    return () => { // Cleanup function
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing, handleMouseMove, handleMouseUp]);
+
 
   if (!mounted) return null;
 
@@ -82,7 +213,7 @@ const App: React.FC = () => {
           
           showCenterCap={showCenterCap}
           
-          customTime={getCustomDate()}
+          customTime={currentClockTime}
         />
       </div>
 
@@ -110,7 +241,16 @@ const App: React.FC = () => {
 
       {/* Settings Panel - Top Left */}
       {showSettings && (
-        <div className="absolute top-16 left-6 z-50 bg-slate-900/80 backdrop-blur-sm border border-slate-700 p-4 rounded-lg shadow-xl w-64 max-h-[85vh] overflow-y-auto transition-opacity duration-300">
+        <div 
+          className="absolute top-16 left-6 z-50 bg-slate-900/80 backdrop-blur-sm border border-slate-700 p-4 rounded-lg shadow-xl max-h-[85vh] overflow-y-auto transition-opacity duration-300"
+          style={{ width: settingsPanelWidth }}
+        >
+          {/* Resize handle */}
+          <div 
+            className="absolute right-0 top-0 h-full w-2 cursor-ew-resize hover:bg-slate-700/50 transition-colors duration-200"
+            onMouseDown={handleMouseDown}
+          />
+
           <div className="text-slate-400 font-mono text-xs tracking-widest opacity-80 mb-4 border-b border-slate-700 pb-2">
             SENDE-KONFIGURATION
           </div>
@@ -121,25 +261,36 @@ const App: React.FC = () => {
             <div className="flex justify-between items-center">
               <span className="text-slate-300 text-[10px] font-mono uppercase">ZEIT-MODUS</span>
               <button 
-                onClick={() => setUseCustomTime(!useCustomTime)}
-                className={`text-[10px] font-mono uppercase tracking-widest border px-2 py-1 rounded transition-colors w-24 text-center ${useCustomTime ? 'bg-amber-900/50 border-amber-500 text-amber-200' : 'border-slate-600 text-slate-200'}`}
+                onClick={handleTimeModeToggle}
+                className={`text-[10px] font-mono uppercase tracking-widest border px-2 py-1 rounded transition-colors w-24 text-center ${!isLiveMode ? 'bg-amber-900/50 border-amber-500 text-amber-200' : 'border-slate-600 text-slate-200'}`}
               >
-                {useCustomTime ? 'MANUELL' : 'LIVE'}
+                {!isLiveMode ? 'MANUELL' : 'LIVE'}
               </button>
             </div>
 
-            {/* Custom Time Input */}
-            {useCustomTime && (
-              <div className="flex justify-between items-center animate-fadeIn">
-                <span className="text-slate-300 text-[10px] font-mono uppercase">UHRZEIT</span>
-                <input 
-                  type="time" 
-                  step="1"
-                  value={customTimeInput}
-                  onChange={(e) => setCustomTimeInput(e.target.value)}
-                  className="bg-slate-800 text-white text-[10px] font-mono border border-slate-600 rounded px-2 py-1 w-24 text-center focus:outline-none focus:border-amber-500 transition-colors"
-                />
-              </div>
+            {/* Custom Time Input & Start/Pause Button */}
+            {!isLiveMode && (
+              <>
+                <div className="flex justify-between items-center animate-fadeIn">
+                  <span className="text-slate-300 text-[10px] font-mono uppercase">UHRZEIT</span>
+                  <input 
+                    type="time" 
+                    step="1"
+                    value={manualInputTimeStr}
+                    onChange={handleManualTimeInputChange}
+                    disabled={isManualTimeRunning}
+                    className={`bg-slate-800 text-white text-[10px] font-mono border border-slate-600 rounded px-2 py-1 w-24 text-center focus:outline-none focus:border-amber-500 transition-colors ${isManualTimeRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  />
+                </div>
+                <div className="flex justify-center animate-fadeIn mt-[-10px]">
+                    <button 
+                        onClick={isManualTimeRunning ? pauseManualTimeAnimation : startManualTimeAnimation}
+                        className={`text-[10px] font-mono uppercase tracking-widest border px-2 py-1 rounded transition-colors w-full text-center ${isManualTimeRunning ? 'bg-red-900/50 border-red-500 text-red-200' : 'bg-green-900/50 border-green-500 text-green-200'}`}
+                    >
+                        {isManualTimeRunning ? 'PAUSE' : 'START'}
+                    </button>
+                </div>
+              </>
             )}
 
             <div className="border-t border-slate-800 my-1"></div>
